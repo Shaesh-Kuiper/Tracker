@@ -1,0 +1,23 @@
+{
+  "name": "leetcode-profile-scraper",
+  "version": "1.0.0",
+  "description": "A Node.js script to scrape LeetCode profile statistics and display them in tabular format",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.1.2",
+    "cli-table3": "^0.6.3"
+  },
+  "keywords": [
+    "leetcode",
+    "scraper",
+    "nodejs",
+    "statistics"
+  ],
+  "author": "",
+  "license": "MIT"
+}
