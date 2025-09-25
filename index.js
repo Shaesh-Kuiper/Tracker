@@ -1,6 +1,7 @@
 const axios = require('axios');
 const Table = require('cli-table3');
 const CodeChefScraper = require('./codechef-scraper');
+const GeeksforGeeksScraper = require('./geeksforgeeks-scraper');
 
 class LeetCodeScraper {
   constructor() {
@@ -129,12 +130,15 @@ class LeetCodeScraper {
 function categorizeLinks(profileLinks) {
   const leetcodeLinks = [];
   const codechefLinks = [];
+  const geeksforgeeksLinks = [];
 
   profileLinks.forEach(link => {
     if (link.includes('leetcode.com')) {
       leetcodeLinks.push(link);
     } else if (link.includes('codechef.com')) {
       codechefLinks.push(link);
+    } else if (link.includes('geeksforgeeks.org')) {
+      geeksforgeeksLinks.push(link);
     } else {
       // Assume it's a username - try to determine platform by context or let user specify
       console.log(`Warning: Unable to determine platform for "${link}". Treating as LeetCode username.`);
@@ -142,7 +146,7 @@ function categorizeLinks(profileLinks) {
     }
   });
 
-  return { leetcodeLinks, codechefLinks };
+  return { leetcodeLinks, codechefLinks, geeksforgeeksLinks };
 }
 
 async function main() {
@@ -151,15 +155,15 @@ async function main() {
 
   if (profileLinks.length === 0) {
     console.log('Usage: node index.js <profile-url1> <profile-url2> ...');
-    console.log('\nSupported platforms: LeetCode and CodeChef');
+    console.log('\nSupported platforms: LeetCode, CodeChef, and GeeksforGeeks');
     console.log('\nExamples:');
     console.log('node index.js https://leetcode.com/u/john_doe https://www.codechef.com/users/jane_smith');
-    console.log('node index.js https://leetcode.com/u/user1 https://leetcode.com/u/user2');
-    console.log('node index.js https://www.codechef.com/users/user1 https://www.codechef.com/users/user2');
+    console.log('node index.js https://www.geeksforgeeks.org/user/username/');
+    console.log('node index.js https://leetcode.com/u/user1 https://www.codechef.com/users/user2 https://www.geeksforgeeks.org/user/user3/');
     return;
   }
 
-  const { leetcodeLinks, codechefLinks } = categorizeLinks(profileLinks);
+  const { leetcodeLinks, codechefLinks, geeksforgeeksLinks } = categorizeLinks(profileLinks);
 
   try {
     // Process LeetCode profiles
@@ -177,6 +181,15 @@ async function main() {
       const codechefScraper = new CodeChefScraper();
       const codechefResults = await codechefScraper.scrapeMultipleProfiles(codechefLinks);
       codechefScraper.displayResults(codechefResults);
+      console.log();
+    }
+
+    // Process GeeksforGeeks profiles
+    if (geeksforgeeksLinks.length > 0) {
+      console.log('=== GeeksforGeeks Profiles ===');
+      const gfgScraper = new GeeksforGeeksScraper();
+      const gfgResults = await gfgScraper.scrapeMultipleProfiles(geeksforgeeksLinks);
+      gfgScraper.displayResults(gfgResults);
     }
 
   } catch (error) {

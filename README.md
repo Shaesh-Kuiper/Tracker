@@ -1,25 +1,32 @@
-# Competitive Programming Profile Scraper
+# Competitive Programming Tracker
 
-A Node.js application that fetches profile statistics from LeetCode and CodeChef, displaying them in a tabular format.
+A comprehensive web application to track and monitor competitive programming profiles across LeetCode, CodeChef, and GeeksforGeeks. Features both a modern web interface and command-line tools.
 
 ## Features
 
-**LeetCode Support:**
-- Scrapes multiple LeetCode profiles at once
-- Displays problem counts by difficulty (Easy, Medium, Hard)
-- Shows total problems solved
+### Web Application
+- **Modern Web Interface**: Clean, responsive design with tabbed navigation
+- **Profile Management**: Add profiles with name, registration number, and platform URL
+- **Multi-Platform Support**: Track up to 120 profiles across all platforms
+- **Real-time Data**: Refresh profile data with a single click
+- **Statistics Dashboard**: View summary statistics for each platform
+- **Data Persistence**: All profile data is saved locally
+
+### Platform Support
+
+**LeetCode:**
+- Problem counts by difficulty (Easy, Medium, Hard, Total)
 - Uses official LeetCode GraphQL API
 
-**CodeChef Support:**
-- Fetches Division, Provisional Rating, Global Rank, Country Rank
-- Shows total problems solved
+**CodeChef:**
+- Division, Provisional Rating, Global Rank, Country Rank
+- Total problems solved and contests participated
 - Web scraping with fallback API support
 
-**General:**
-- Supports mixed platform URLs in a single command
-- Outputs data in clean tabular formats
-- Handles various URL formats
-- Rate limiting to prevent API abuse
+**GeeksforGeeks:**
+- Total problems solved with difficulty breakdown (School, Basic, Easy, Medium, Hard)
+- Coding score, current streak, and contest rating
+- API-based data fetching
 
 ## Installation
 
@@ -29,20 +36,32 @@ npm install
 
 ## Usage
 
-Run the script with LeetCode profile URLs or usernames:
+### Web Application
+
+Start the web server:
+
+```bash
+npm start
+```
+
+Then open your browser and go to: `http://localhost:3000`
+
+### Command Line Interface
+
+Use the original CLI for batch operations:
 
 ```bash
 # LeetCode profiles only
-node index.js https://leetcode.com/u/username1 https://leetcode.com/u/username2
+npm run cli https://leetcode.com/u/username1 https://leetcode.com/u/username2
 
 # CodeChef profiles only
-node index.js https://www.codechef.com/users/username1 https://www.codechef.com/users/username2
+npm run cli https://www.codechef.com/users/username1 https://www.codechef.com/users/username2
 
 # Mixed platforms in one command
-node index.js https://leetcode.com/u/john_doe https://www.codechef.com/users/jane_smith
+npm run cli https://leetcode.com/u/john_doe https://www.codechef.com/users/jane_smith
 
 # Using just usernames (assumes LeetCode for ambiguous cases)
-node index.js username1 username2
+npm run cli username1 username2
 ```
 
 ## Example Output

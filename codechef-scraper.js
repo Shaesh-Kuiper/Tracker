@@ -22,7 +22,8 @@ class CodeChefScraper {
         provisionalRating: 'N/A',
         globalRank: 'N/A',
         countryRank: 'N/A',
-        totalProblemsSolved: 'N/A'
+        totalProblemsSolved: 'N/A',
+        contestsParticipated: 'N/A'
       };
 
       // Extract Division - look for division information in rating section
@@ -40,8 +41,9 @@ class CodeChefScraper {
         result.provisionalRating = ratingMatch[1];
       }
 
-      // Extract Global Rank
-      const globalRankMatch = divisionText.match(/Global Rank[:\s]*(\d+)/i);
+      // Extract Global Rank - prioritize the rating section global rank
+      const globalRankMatch = divisionText.match(/(\d+)\s*Global Rank/i) ||
+                             divisionText.match(/Global Rank[:\s]*(\d+)/i);
       if (globalRankMatch) {
         result.globalRank = globalRankMatch[1];
       }
@@ -56,6 +58,14 @@ class CodeChefScraper {
       const problemsMatch = divisionText.match(/Total Problems Solved[:\s]*(\d+)/i);
       if (problemsMatch) {
         result.totalProblemsSolved = problemsMatch[1];
+      }
+
+      // Extract Number of Contests Participated
+      const contestsMatch = divisionText.match(/No\.\s*of\s*Contests\s*Participated[:\s]*(\d+)/i) ||
+                           divisionText.match(/Contests\s*Participated[:\s]*(\d+)/i) ||
+                           divisionText.match(/(\d+)\s*contests?\s*participated/i);
+      if (contestsMatch) {
+        result.contestsParticipated = contestsMatch[1];
       }
 
       // Fallback: Try alternative API approach
@@ -93,6 +103,7 @@ class CodeChefScraper {
         globalRank: 'Error',
         countryRank: 'Error',
         totalProblemsSolved: 'Error',
+        contestsParticipated: 'Error',
         error: true
       };
     }
@@ -125,8 +136,8 @@ class CodeChefScraper {
   displayResults(results) {
     const Table = require('cli-table3');
     const table = new Table({
-      head: ['Name', 'Division', 'Rating', 'Global Rank', 'Country Rank', 'Problems'],
-      colWidths: [15, 8, 8, 12, 13, 10]
+      head: ['Name', 'Division', 'Rating', 'Global Rank', 'Country Rank', 'Problems', 'Contests'],
+      colWidths: [15, 8, 8, 12, 13, 10, 10]
     });
 
     results.forEach(result => {
@@ -136,7 +147,8 @@ class CodeChefScraper {
         result.provisionalRating,
         result.globalRank,
         result.countryRank,
-        result.totalProblemsSolved
+        result.totalProblemsSolved,
+        result.contestsParticipated
       ]);
     });
 
