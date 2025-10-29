@@ -1,6 +1,15 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+// Configurable throttling and retry settings via env vars (with sane defaults)
+// Default internal delay is 0 so bulk upload pacing fully controls the rate
+const CODECHEF_DELAY_MS = parseInt(process.env.SCRAPE_CODECHEF_DELAY_MS || process.env.SCRAPE_DELAY_MS || '0', 10);
+const MAX_RETRIES = parseInt(process.env.SCRAPE_MAX_RETRIES || '3', 10);
+const BACKOFF_BASE_MS = parseInt(process.env.SCRAPE_BACKOFF_BASE_MS || '4000', 10);
+const BACKOFF_FACTOR = parseFloat(process.env.SCRAPE_BACKOFF_FACTOR || '2');
+
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 class CodeChefScraper {
   constructor() {
     this.baseUrl = 'https://www.codechef.com/users/';
@@ -9,11 +18,50 @@ class CodeChefScraper {
   async getUserStats(username) {
     try {
       const url = `${this.baseUrl}${username}`;
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+
+      // Fetch with retry/backoff on 429, bail fast on 404
+      let response;
+      let lastStatus = null;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          response = await axios.get(url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36'
+            },
+            validateStatus: () => true,
+            timeout: 15000
+          });
+          lastStatus = response.status;
+          if (response.status === 200) {
+            break; // success
+          }
+
+          if (response.status === 404) {
+            throw new Error('404 Not Found');
+          }
+
+          if (response.status === 429) {
+            const retryAfter = parseInt(response.headers['retry-after'] || '0', 10);
+            const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.round(BACKOFF_BASE_MS * Math.pow(BACKOFF_FACTOR, attempt));
+            console.warn(`CodeChef 429 for ${username}. Backing off ${waitMs} ms (attempt ${attempt + 1}/${MAX_RETRIES + 1}).`);
+            if (attempt < MAX_RETRIES) {
+              await sleep(waitMs);
+              continue;
+            }
+            throw new Error('429 Too Many Requests');
+          }
+
+          // Other 5xx/4xx: small backoff and retry
+          if (attempt < MAX_RETRIES) {
+            await sleep(Math.round(BACKOFF_BASE_MS * Math.pow(1.5, attempt)));
+            continue;
+          }
+          throw new Error(`HTTP ${response.status}`);
+        } catch (netErr) {
+          if (attempt >= MAX_RETRIES) throw netErr;
+          await sleep(Math.round(BACKOFF_BASE_MS * Math.pow(1.5, attempt)));
         }
-      });
+      }
 
       const $ = cheerio.load(response.data);
       const result = {
@@ -93,8 +141,17 @@ class CodeChefScraper {
         }
       }
 
+      // Respect inter-request delay to avoid rate limiting
+      await sleep(CODECHEF_DELAY_MS);
+
       return result;
     } catch (error) {
+      // Attempt to extract status code from error message
+      let errorCode = undefined;
+      const m = String(error && error.message || '').match(/(\d{3})/);
+      if (m) {
+        errorCode = parseInt(m[1], 10);
+      }
       console.error(`Error fetching CodeChef data for ${username}:`, error.message);
       return {
         username,
@@ -104,7 +161,8 @@ class CodeChefScraper {
         countryRank: 'Error',
         totalProblemsSolved: 'Error',
         contestsParticipated: 'Error',
-        error: true
+        error: true,
+        errorCode
       };
     }
   }
@@ -121,13 +179,10 @@ class CodeChefScraper {
 
     const results = [];
 
-    // Process usernames sequentially to avoid rate limiting
+    // Process usernames sequentially; getUserStats includes delay
     for (const username of usernames) {
       const stats = await this.getUserStats(username);
       results.push(stats);
-
-      // Add delay between requests
-      await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
     return results;

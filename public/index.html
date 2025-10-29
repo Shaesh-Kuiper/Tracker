@@ -23,6 +23,24 @@
         <!-- Home Tab -->
         <div id="home" class="tab-content active">
             <div class="form-container">
+                <h2>Bulk Upload (Excel)</h2>
+                <form id="bulkUploadForm" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="bulkFile">Upload Excel (.xlsx or .xls)</label>
+                        <input type="file" id="bulkFile" name="file" accept=".xlsx,.xls" required />
+                        <small>Expected columns: name | reg no | leetcode link | codechef link | geeksforgeeks link. Upload replaces all existing data.</small>
+                        <div id="uploadLogs" class="terminal-container">
+                            <div class="terminal-header">Upload Logs</div>
+                            <div id="logProgress" class="terminal-progress">Success: 0 | Failed: 0 | Processed: 0</div>
+                            <div id="logTerminal" class="terminal" aria-live="polite" aria-atomic="false"></div>
+                        </div>
+                    </div>
+                    <button type="submit">Upload and Replace</button>
+                </form>
+                <div id="bulkMessage" class="message"></div>
+            </div>
+
+            <div class="form-container">
                 <h2>Add New Profile</h2>
                 <form id="profileForm">
                     <div class="form-group">
@@ -49,13 +67,30 @@
 
                 <div id="message" class="message"></div>
             </div>
+
+            <div class="form-container">
+                <h2>Remove Student</h2>
+                <form id="removeStudentForm">
+                    <div class="form-group">
+                        <label for="removeRegNumber">Registration Number:</label>
+                        <input type="text" id="removeRegNumber" name="removeRegNumber" required
+                               pattern="[0-9]{12}" title="Must be exactly 12 digits"
+                               placeholder="e.g., 310623104135">
+                    </div>
+                    <button type="submit" class="remove-btn">Remove Student</button>
+                </form>
+                <div id="removeMessage" class="message"></div>
+            </div>
         </div>
 
         <!-- LeetCode Tab -->
         <div id="leetcode" class="tab-content">
             <div class="platform-header">
                 <h2>LeetCode Profiles <span id="leetcodeCount" class="total-count">0</span></h2>
-                <button id="refreshLeetCode" class="refresh-btn">Refresh Data</button>
+                <div class="header-buttons">
+                    <button id="exportLeetCode" class="export-btn">Export to Excel</button>
+                    <button id="refreshLeetCode" class="refresh-btn">Refresh Data</button>
+                </div>
             </div>
             <div id="leetcodeTable" class="table-container">
                 <p>Loading LeetCode profiles...</p>
@@ -66,7 +101,10 @@
         <div id="codechef" class="tab-content">
             <div class="platform-header">
                 <h2>CodeChef Profiles <span id="codechefCount" class="total-count">0</span></h2>
-                <button id="refreshCodeChef" class="refresh-btn">Refresh Data</button>
+                <div class="header-buttons">
+                    <button id="exportCodeChef" class="export-btn">Export to Excel</button>
+                    <button id="refreshCodeChef" class="refresh-btn">Refresh Data</button>
+                </div>
             </div>
             <div id="codechefTable" class="table-container">
                 <p>Loading CodeChef profiles...</p>
@@ -77,7 +115,10 @@
         <div id="geeksforgeeks" class="tab-content">
             <div class="platform-header">
                 <h2>GeeksforGeeks Profiles <span id="geeksforgeeksCount" class="total-count">0</span></h2>
-                <button id="refreshGeeksforGeeks" class="refresh-btn">Refresh Data</button>
+                <div class="header-buttons">
+                    <button id="exportGeeksforGeeks" class="export-btn">Export to Excel</button>
+                    <button id="refreshGeeksforGeeks" class="refresh-btn">Refresh Data</button>
+                </div>
             </div>
             <div id="geeksforgeeksTable" class="table-container">
                 <p>Loading GeeksforGeeks profiles...</p>

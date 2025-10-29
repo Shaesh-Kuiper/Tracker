@@ -25,13 +25,30 @@ document.addEventListener('DOMContentLoaded', function() {
     // Form submission
     document.getElementById('profileForm').addEventListener('submit', handleFormSubmit);
 
+    // Remove student form submission
+    document.getElementById('removeStudentForm').addEventListener('submit', handleRemoveStudent);
+
+    // Bulk upload submission
+    const bulkUploadForm = document.getElementById('bulkUploadForm');
+    if (bulkUploadForm) {
+        bulkUploadForm.addEventListener('submit', handleBulkUpload);
+    }
+
     // Refresh buttons
     document.getElementById('refreshLeetCode').addEventListener('click', () => refreshPlatformData('leetcode'));
     document.getElementById('refreshCodeChef').addEventListener('click', () => refreshPlatformData('codechef'));
     document.getElementById('refreshGeeksforGeeks').addEventListener('click', () => refreshPlatformData('geeksforgeeks'));
 
+    // Export buttons
+    document.getElementById('exportLeetCode').addEventListener('click', () => exportPlatformData('leetcode'));
+    document.getElementById('exportCodeChef').addEventListener('click', () => exportPlatformData('codechef'));
+    document.getElementById('exportGeeksforGeeks').addEventListener('click', () => exportPlatformData('geeksforgeeks'));
+
     // Load initial data
     loadAllData();
+
+    // Connect to upload log stream
+    connectLogStream();
 });
 
 async function handleFormSubmit(e) {
@@ -99,10 +116,153 @@ function showMessage(text, type) {
     }, 5000);
 }
 
+function showRemoveMessage(text, type) {
+    const messageEl = document.getElementById('removeMessage');
+    messageEl.textContent = text;
+    messageEl.className = `message ${type}`;
+    messageEl.style.display = 'block';
+
+    setTimeout(() => {
+        messageEl.style.display = 'none';
+    }, 5000);
+}
+
+function showBulkMessage(text, type) {
+    const messageEl = document.getElementById('bulkMessage');
+    if (!messageEl) return;
+    messageEl.textContent = text;
+    messageEl.className = `message ${type}`;
+    messageEl.style.display = 'block';
+
+    setTimeout(() => {
+        messageEl.style.display = 'none';
+    }, 7000);
+}
+
+async function handleBulkUpload(e) {
+    e.preventDefault();
+    const fileInput = document.getElementById('bulkFile');
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+        showBulkMessage('Please select an Excel file to upload.', 'error');
+        return;
+    }
+
+    const file = fileInput.files[0];
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (!['xlsx', 'xls'].includes(ext)) {
+        showBulkMessage('Only .xlsx or .xls files are supported.', 'error');
+        return;
+    }
+
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Uploading...';
+    }
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch('/api/bulk-upload', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            showBulkMessage(`Upload successful. Total: ${result.total}. LeetCode: ${result.counts.leetcode}, CodeChef: ${result.counts.codechef}, GeeksforGeeks: ${result.counts.geeksforgeeks}.`, 'success');
+            await loadAllData();
+            e.target.reset();
+        } else {
+            showBulkMessage(result.error || 'Bulk upload failed.', 'error');
+        }
+    } catch (err) {
+        showBulkMessage('Network error during bulk upload.', 'error');
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Upload and Replace';
+        }
+    }
+}
+
+// --- Upload log stream (SSE) ---
+let LOG_SUCCESS = 0;
+let LOG_FAIL = 0;
+let LOG_TOTAL = 0;
+
+function connectLogStream() {
+    const terminal = document.getElementById('logTerminal');
+    if (!terminal) return; // Not on page
+
+    const progressEl = document.getElementById('logProgress');
+    const es = new EventSource('/api/logs/stream');
+
+    es.onmessage = (evt) => {
+        try {
+            const data = JSON.parse(evt.data);
+            if (data.type === 'reset') {
+                LOG_SUCCESS = 0; LOG_FAIL = 0; LOG_TOTAL = data.total || 0;
+                terminal.innerHTML = '';
+                updateLogProgress();
+                appendLogLine('info', `Started bulk upload. Expected: ${LOG_TOTAL}`);
+                return;
+            }
+            if (data.type === 'log') {
+                appendLogLine(data.status === 'success' ? 'success' : 'error', data.message);
+                if (data.status === 'success') LOG_SUCCESS++; else LOG_FAIL++;
+                updateLogProgress();
+                return;
+            }
+        } catch (e) {
+            // ignore malformed events
+        }
+    };
+
+    es.onerror = () => {
+        // Try to reconnect automatically after brief pause
+        setTimeout(() => {
+            try { es.close(); } catch {}
+            connectLogStream();
+        }, 3000);
+    };
+}
+
+function appendLogLine(kind, text) {
+    const terminal = document.getElementById('logTerminal');
+    if (!terminal) return;
+    const line = document.createElement('div');
+    line.className = `log-line ${kind}`;
+    line.textContent = text;
+    terminal.appendChild(line);
+    terminal.scrollTop = terminal.scrollHeight;
+}
+
+function updateLogProgress() {
+    const el = document.getElementById('logProgress');
+    if (!el) return;
+    const processed = LOG_SUCCESS + LOG_FAIL;
+    const totalPart = LOG_TOTAL ? ` / ${LOG_TOTAL}` : '';
+    el.textContent = `Success: ${LOG_SUCCESS} | Failed: ${LOG_FAIL} | Processed: ${processed}${totalPart}`;
+}
+
 async function loadAllData() {
     await loadPlatformData('leetcode');
     await loadPlatformData('codechef');
     await loadPlatformData('geeksforgeeks');
+}
+
+// Helper to map platform to correct button IDs used in HTML
+function getButtonId(prefix, platform) {
+    const properCasing = {
+        leetcode: 'LeetCode',
+        codechef: 'CodeChef',
+        geeksforgeeks: 'GeeksforGeeks'
+    };
+    const suffix = properCasing[platform] || capitalizeFirst(platform);
+    return `${prefix}${suffix}`;
 }
 
 async function loadPlatformData(platform) {
@@ -125,9 +285,11 @@ async function loadPlatformData(platform) {
 }
 
 async function refreshPlatformData(platform) {
-    const button = document.getElementById(`refresh${capitalizeFirst(platform)}`);
-    button.disabled = true;
-    button.textContent = 'Refreshing...';
+    const button = document.getElementById(getButtonId('refresh', platform));
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Refreshing...';
+    }
 
     try {
         const response = await fetch(`/api/profiles/${platform}/refresh`, {
@@ -145,8 +307,10 @@ async function refreshPlatformData(platform) {
     } catch (error) {
         showMessage('Network error during refresh', 'error');
     } finally {
-        button.disabled = false;
-        button.textContent = 'Refresh Data';
+        if (button) {
+            button.disabled = false;
+            button.textContent = 'Refresh Data';
+        }
     }
 }
 
@@ -394,5 +558,93 @@ function getSortableTableHeaders(platform, sortColumn, sortDirection) {
             `;
         default:
             return '';
+    }
+}
+
+async function handleRemoveStudent(e) {
+    e.preventDefault();
+
+    const formData = new FormData(e.target);
+    const regNumber = formData.get('removeRegNumber');
+
+    // Validate registration number
+    if (!/^\d{12}$/.test(regNumber)) {
+        showRemoveMessage('Registration number must be exactly 12 digits', 'error');
+        return;
+    }
+
+    if (!confirm(`Are you sure you want to remove the student with registration number ${regNumber}?`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/profiles/student/${regNumber}`, {
+            method: 'DELETE'
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            // Support new multi-platform removal response shape
+            if (result.removed && Array.isArray(result.removed.platforms)) {
+                const plats = result.removed.platforms.join(', ');
+                showRemoveMessage(`Student ${result.removed.name} (${result.removed.regNumber}) removed successfully from: ${plats}`, 'success');
+            } else if (result.removedProfile) {
+                // Backward compatibility with older response shape
+                showRemoveMessage(`Student ${result.removedProfile.name} (${result.removedProfile.regNumber}) removed successfully from ${result.removedProfile.platform}!`, 'success');
+            } else {
+                showRemoveMessage('Student removed successfully', 'success');
+            }
+            e.target.reset();
+            // Refresh all platform data
+            await loadAllData();
+        } else {
+            showRemoveMessage(result.error || 'Failed to remove student', 'error');
+        }
+    } catch (error) {
+        showRemoveMessage('Network error. Please try again.', 'error');
+    }
+}
+
+function exportPlatformData(platform) {
+    const button = document.getElementById(getButtonId('export', platform));
+    const originalText = button ? button.textContent : '';
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Exporting...';
+    }
+
+    try {
+        // Create the export URL
+        const exportUrl = `/api/export/${platform}`;
+        console.log(`Starting export for ${platform} using URL: ${exportUrl}`);
+
+        // Trigger download via temporary anchor
+        const link = document.createElement('a');
+        link.href = exportUrl;
+        link.target = '_blank';
+        link.download = `${platform}_profiles_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        showMessage(`${capitalizeFirst(platform)} data export started!`, 'success');
+
+        // Reset button after a short delay
+        setTimeout(() => {
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalText || 'Export to Excel';
+            }
+        }, 2000);
+
+    } catch (error) {
+        console.error('Export error:', error);
+        showMessage(`Failed to export ${platform} data: ${error.message}`, 'error');
+        if (button) {
+            button.disabled = false;
+            button.textContent = originalText || 'Export to Excel';
+        }
     }
 }

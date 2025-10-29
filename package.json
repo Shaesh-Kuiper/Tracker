@@ -7,13 +7,30 @@
     "start": "node server.js",
     "dev": "node server.js",
     "cli": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:exe": "pkg server.js --targets node18-win-x64 --output dist/CPTracker.exe"
+  },
+  "pkg": {
+    "scripts": [
+      "server.js",
+      "index.js",
+      "codechef-scraper.js",
+      "geeksforgeeks-scraper.js"
+    ],
+    "assets": [
+      "public/**/*"
+    ]
   },
   "dependencies": {
     "axios": "^1.6.0",
-    "cheerio": "^1.1.2",
+    "cheerio": "1.0.0-rc.12",
     "cli-table3": "^0.6.3",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
   },
   "keywords": [
     "leetcode",
