@@ -58,6 +58,7 @@ async function handleFormSubmit(e) {
     const profileData = {
         name: formData.get('name'),
         regNumber: formData.get('regNumber'),
+        dept: formData.get('dept'),
         profileLink: formData.get('profileLink')
     };
 
@@ -334,6 +335,7 @@ function renderPlatformTable(platform, profiles) {
                 <tr>
                     <th class="sortable" data-column="name">Name</th>
                     <th class="sortable" data-column="regNumber">Registration No.</th>
+                    <th class="sortable" data-column="dept">Dept</th>
                     ${getTableHeaders(platform)}
                 </tr>
             </thead>
@@ -345,6 +347,7 @@ function renderPlatformTable(platform, profiles) {
             <tr>
                 <td>${profile.name}</td>
                 <td>${profile.regNumber}</td>
+                <td>${profile.dept || '-'}</td>
                 ${getTableCells(platform, profile.data)}
             </tr>
         `;
@@ -455,6 +458,9 @@ function sortTable(platform, profiles, column) {
         } else if (column === 'regNumber') {
             aVal = a.regNumber;
             bVal = b.regNumber;
+        } else if (column === 'dept') {
+            aVal = a.dept || '';
+            bVal = b.dept || '';
         } else {
             // Data columns
             aVal = a.data[column];
@@ -503,6 +509,7 @@ function renderSortedTable(platform, profiles, sortColumn, sortDirection) {
                 <tr>
                     <th class="sortable ${sortColumn === 'name' ? `sort-${sortDirection}` : ''}" data-column="name">Name</th>
                     <th class="sortable ${sortColumn === 'regNumber' ? `sort-${sortDirection}` : ''}" data-column="regNumber">Registration No.</th>
+                    <th class="sortable ${sortColumn === 'dept' ? `sort-${sortDirection}` : ''}" data-column="dept">Dept</th>
                     ${getSortableTableHeaders(platform, sortColumn, sortDirection)}
                 </tr>
             </thead>
@@ -514,6 +521,7 @@ function renderSortedTable(platform, profiles, sortColumn, sortDirection) {
             <tr>
                 <td>${profile.name}</td>
                 <td>${profile.regNumber}</td>
+                <td>${profile.dept || '-'}</td>
                 ${getTableCells(platform, profile.data)}
             </tr>
         `;

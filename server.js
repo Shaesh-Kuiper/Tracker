@@ -164,7 +164,8 @@ function normalizeHeader(h) {
 function mapHeaderToKey(h) {
     const n = normalizeHeader(h);
     if (['name', 'student name', 'full name'].includes(n)) return 'name';
-    if (['reg no', 'reg no.', 'reg number', 'registration number', 'reg', 'regno'].includes(n)) return 'reg';
+    if (['reg no', 'reg no.', 'reg number', 'registration number', 'reg', 'regno', 'register number'].includes(n)) return 'reg';
+    if (['dept', 'department'].includes(n)) return 'dept';
     if (['leetcode link', 'leetcode', 'lc link'].includes(n)) return 'leetcode';
     if (['codechef link', 'codechef', 'cc link'].includes(n)) return 'codechef';
     if (['geeksforgeeks link', 'geeksforgeeks', 'gfg link', 'gfg'].includes(n)) return 'geeksforgeeks';
@@ -229,7 +230,7 @@ app.get('/api/profiles/:platform(leetcode|codechef|geeksforgeeks)', async (req, 
 // Add a new profile
 app.post('/api/profiles', async (req, res) => {
     try {
-        const { name, regNumber, profileLink } = req.body;
+        const { name, regNumber, profileLink, dept } = req.body;
 
         // Validation
         if (!name || !regNumber || !profileLink) {
@@ -273,6 +274,7 @@ app.post('/api/profiles', async (req, res) => {
             id: Date.now().toString(),
             name,
             regNumber,
+            dept: dept || '',
             profileLink,
             username,
             data,
@@ -440,6 +442,7 @@ app.get('/api/export/:platform(leetcode|codechef|geeksforgeeks)', async (req, re
             const baseData = {
                 'Name': profile.name,
                 'Registration Number': profile.regNumber,
+                'Dept': profile.dept || '',
                 'Profile Link': profile.profileLink,
                 'Last Updated': new Date(profile.lastUpdated).toLocaleString()
             };
@@ -541,7 +544,7 @@ app.post('/api/bulk-upload', upload.single('file'), async (req, res) => {
         }
 
         const headerRow = rows[0];
-        const idx = { name: -1, reg: -1, leetcode: -1, codechef: -1, geeksforgeeks: -1 };
+        const idx = { name: -1, reg: -1, dept: -1, leetcode: -1, codechef: -1, geeksforgeeks: -1 };
         headerRow.forEach((h, i) => {
             const key = mapHeaderToKey(h);
             if (key && idx[key] === -1) idx[key] = i;
@@ -579,6 +582,7 @@ app.post('/api/bulk-upload', upload.single('file'), async (req, res) => {
             const name = String(row[idx.name] || '').trim();
             const regRaw = String(row[idx.reg] || '').trim();
             const regNumber = (regRaw.match(/\d+/g) || []).join('');
+            const dept = idx.dept !== -1 ? String(row[idx.dept] || '').trim() : '';
 
             const leet = idx.leetcode !== -1 ? String(row[idx.leetcode] || '').trim() : '';
             const cc = idx.codechef !== -1 ? String(row[idx.codechef] || '').trim() : '';
@@ -615,6 +619,7 @@ app.post('/api/bulk-upload', upload.single('file'), async (req, res) => {
                     id: `${Date.now()}-${platform}-${Math.random().toString(36).slice(2, 8)}`,
                     name,
                     regNumber,
+                    dept,
                     profileLink: link,
                     username,
                     data,
