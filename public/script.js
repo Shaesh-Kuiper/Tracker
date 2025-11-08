@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('exportLeetCode').addEventListener('click', () => exportPlatformData('leetcode'));
     document.getElementById('exportCodeChef').addEventListener('click', () => exportPlatformData('codechef'));
     document.getElementById('exportGeeksforGeeks').addEventListener('click', () => exportPlatformData('geeksforgeeks'));
+    document.getElementById('exportAllData').addEventListener('click', exportAllStudentData);
 
     // Search inputs
     document.getElementById('searchLeetCode').addEventListener('input', (e) => handleSearch('leetcode', e.target.value));
@@ -749,6 +750,49 @@ function exportPlatformData(platform) {
         if (button) {
             button.disabled = false;
             button.textContent = originalText || 'Export to Excel';
+        }
+    }
+}
+
+function exportAllStudentData() {
+    const button = document.getElementById('exportAllData');
+    const originalText = button ? button.textContent : '';
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Exporting...';
+    }
+
+    try {
+        // Create the export URL
+        const exportUrl = '/api/export/all';
+        console.log('Starting export for all student data');
+
+        // Trigger download via temporary anchor
+        const link = document.createElement('a');
+        link.href = exportUrl;
+        link.target = '_blank';
+        link.download = `student_data_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        showMessage('Student data export started!', 'success');
+
+        // Reset button after a short delay
+        setTimeout(() => {
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalText || 'Export Student Data';
+            }
+        }, 2000);
+
+    } catch (error) {
+        console.error('Export error:', error);
+        showMessage(`Failed to export student data: ${error.message}`, 'error');
+        if (button) {
+            button.disabled = false;
+            button.textContent = originalText || 'Export Student Data';
         }
     }
 }

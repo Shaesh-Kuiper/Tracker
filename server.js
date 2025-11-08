@@ -424,6 +424,155 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // Export platform data to Excel
+app.get('/api/export/all', async (req, res) => {
+    try {
+        const profiles = await loadProfiles();
+
+        // Create a map to combine all student data by registration number
+        const studentMap = new Map();
+
+        // Process LeetCode data
+        if (profiles.leetcode) {
+            profiles.leetcode.forEach(profile => {
+                if (!studentMap.has(profile.regNumber)) {
+                    studentMap.set(profile.regNumber, {
+                        'Name': profile.name,
+                        'Registration Number': profile.regNumber,
+                        'Dept': profile.dept || '',
+                        'LC_Easy': '',
+                        'LC_Medium': '',
+                        'LC_Hard': '',
+                        'LC_Total': '',
+                        'CC_Division': '',
+                        'CC_Global Rank': '',
+                        'CC_Contests': '',
+                        'CC_Problems': '',
+                        'GG_Easy': '',
+                        'GG_Medium': '',
+                        'GG_Hard': '',
+                        'GG_Score': '',
+                        'GG_Rank': ''
+                    });
+                }
+                const student = studentMap.get(profile.regNumber);
+                if (profile.data && !profile.data.error) {
+                    student['LC_Easy'] = profile.data.easy || '';
+                    student['LC_Medium'] = profile.data.medium || '';
+                    student['LC_Hard'] = profile.data.hard || '';
+                    student['LC_Total'] = profile.data.total || '';
+                }
+            });
+        }
+
+        // Process CodeChef data
+        if (profiles.codechef) {
+            profiles.codechef.forEach(profile => {
+                if (!studentMap.has(profile.regNumber)) {
+                    studentMap.set(profile.regNumber, {
+                        'Name': profile.name,
+                        'Registration Number': profile.regNumber,
+                        'Dept': profile.dept || '',
+                        'LC_Easy': '',
+                        'LC_Medium': '',
+                        'LC_Hard': '',
+                        'LC_Total': '',
+                        'CC_Division': '',
+                        'CC_Global Rank': '',
+                        'CC_Contests': '',
+                        'CC_Problems': '',
+                        'GG_Easy': '',
+                        'GG_Medium': '',
+                        'GG_Hard': '',
+                        'GG_Score': '',
+                        'GG_Rank': ''
+                    });
+                }
+                const student = studentMap.get(profile.regNumber);
+                if (profile.data && !profile.data.error) {
+                    student['CC_Division'] = profile.data.division || '';
+                    student['CC_Global Rank'] = profile.data.globalRank || '';
+                    student['CC_Contests'] = profile.data.contestsParticipated || '';
+                    student['CC_Problems'] = profile.data.totalProblemsSolved || '';
+                }
+            });
+        }
+
+        // Process GeeksforGeeks data
+        if (profiles.geeksforgeeks) {
+            profiles.geeksforgeeks.forEach(profile => {
+                if (!studentMap.has(profile.regNumber)) {
+                    studentMap.set(profile.regNumber, {
+                        'Name': profile.name,
+                        'Registration Number': profile.regNumber,
+                        'Dept': profile.dept || '',
+                        'LC_Easy': '',
+                        'LC_Medium': '',
+                        'LC_Hard': '',
+                        'LC_Total': '',
+                        'CC_Division': '',
+                        'CC_Global Rank': '',
+                        'CC_Contests': '',
+                        'CC_Problems': '',
+                        'GG_Easy': '',
+                        'GG_Medium': '',
+                        'GG_Hard': '',
+                        'GG_Score': '',
+                        'GG_Rank': ''
+                    });
+                }
+                const student = studentMap.get(profile.regNumber);
+                if (profile.data && !profile.data.error) {
+                    student['GG_Easy'] = profile.data.easy || '';
+                    student['GG_Medium'] = profile.data.medium || '';
+                    student['GG_Hard'] = profile.data.hard || '';
+                    student['GG_Score'] = profile.data.codingScore || '';
+                    student['GG_Rank'] = profile.data.contestRating || '';
+                }
+            });
+        }
+
+        // Convert map to array
+        const excelData = Array.from(studentMap.values());
+
+        if (excelData.length === 0) {
+            return res.status(400).json({ error: 'No data to export' });
+        }
+
+        // Create workbook and worksheet
+        const workbook = XLSX.utils.book_new();
+        const worksheet = XLSX.utils.json_to_sheet(excelData);
+
+        // Auto-size columns
+        const colWidths = [];
+        const keys = Object.keys(excelData[0] || {});
+        keys.forEach((key, index) => {
+            const maxLength = Math.max(
+                key.length,
+                ...excelData.map(row => String(row[key] || '').length)
+            );
+            colWidths[index] = { wch: Math.min(maxLength + 2, 50) };
+        });
+        worksheet['!cols'] = colWidths;
+
+        // Add worksheet to workbook
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Student Data');
+
+        // Generate Excel file
+        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        // Set headers for file download
+        const fileName = `student_data_${new Date().toISOString().split('T')[0]}.xlsx`;
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Length', buffer.length);
+
+        res.end(buffer);
+    } catch (error) {
+        console.error('Error exporting all student data to Excel:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 app.get('/api/export/:platform(leetcode|codechef|geeksforgeeks)', async (req, res) => {
     try {
         const platform = req.params.platform;
