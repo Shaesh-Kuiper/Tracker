@@ -68,7 +68,8 @@ header p {
 }
 
 .tab-btn .tab-icon-large {
-    height: 30px;
+    transform: scale(2);
+    margin-right: 8px;
 }
 
 .tab-btn:hover {
