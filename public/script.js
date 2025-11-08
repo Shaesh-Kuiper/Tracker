@@ -1,3 +1,10 @@
+// Store profiles data for search functionality
+const platformProfiles = {
+    leetcode: [],
+    codechef: [],
+    geeksforgeeks: []
+};
+
 // Tab functionality
 document.addEventListener('DOMContentLoaded', function() {
     const tabBtns = document.querySelectorAll('.tab-btn');
@@ -43,6 +50,11 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('exportLeetCode').addEventListener('click', () => exportPlatformData('leetcode'));
     document.getElementById('exportCodeChef').addEventListener('click', () => exportPlatformData('codechef'));
     document.getElementById('exportGeeksforGeeks').addEventListener('click', () => exportPlatformData('geeksforgeeks'));
+
+    // Search inputs
+    document.getElementById('searchLeetCode').addEventListener('input', (e) => handleSearch('leetcode', e.target.value));
+    document.getElementById('searchCodeChef').addEventListener('input', (e) => handleSearch('codechef', e.target.value));
+    document.getElementById('searchGeeksforGeeks').addEventListener('input', (e) => handleSearch('geeksforgeeks', e.target.value));
 
     // Load initial data
     loadAllData();
@@ -300,6 +312,12 @@ async function refreshPlatformData(platform) {
         const data = await response.json();
 
         if (response.ok) {
+            // Clear search input when refreshing
+            const searchInput = document.getElementById(getButtonId('search', platform));
+            if (searchInput) {
+                searchInput.value = '';
+            }
+
             renderPlatformTable(platform, data);
             showMessage('Data refreshed successfully!', 'success');
         } else {
@@ -316,6 +334,9 @@ async function refreshPlatformData(platform) {
 }
 
 function renderPlatformTable(platform, profiles) {
+    // Store profiles for search functionality
+    platformProfiles[platform] = profiles;
+
     const container = document.getElementById(`${platform}Table`);
     const countElement = document.getElementById(`${platform}Count`);
 
@@ -357,6 +378,81 @@ function renderPlatformTable(platform, profiles) {
     container.innerHTML = tableHTML;
 
     // Add sorting functionality
+    addSortingEventListeners(platform, profiles);
+}
+
+// Search functionality
+function handleSearch(platform, searchTerm) {
+    const allProfiles = platformProfiles[platform];
+
+    if (!allProfiles || allProfiles.length === 0) {
+        return;
+    }
+
+    // If search term is empty, show all profiles
+    if (!searchTerm.trim()) {
+        renderPlatformTable(platform, allProfiles);
+        return;
+    }
+
+    // Filter profiles based on name, registration number, or department
+    const searchLower = searchTerm.toLowerCase().trim();
+    const filteredProfiles = allProfiles.filter(profile => {
+        const name = (profile.name || '').toLowerCase();
+        const regNumber = (profile.regNumber || '').toLowerCase();
+        const dept = (profile.dept || '').toLowerCase();
+
+        return name.includes(searchLower) ||
+               regNumber.includes(searchLower) ||
+               dept.includes(searchLower);
+    });
+
+    // Render filtered results
+    renderFilteredTable(platform, filteredProfiles);
+}
+
+function renderFilteredTable(platform, profiles) {
+    const container = document.getElementById(`${platform}Table`);
+    const countElement = document.getElementById(`${platform}Count`);
+
+    // Update count to show filtered results
+    countElement.textContent = profiles.length;
+
+    if (profiles.length === 0) {
+        container.innerHTML = `
+            <p style="text-align: center; color: #666; padding: 40px;">No matching profiles found.</p>
+        `;
+        return;
+    }
+
+    let tableHTML = `
+        <table class="data-table" data-platform="${platform}">
+            <thead>
+                <tr>
+                    <th class="sortable" data-column="name">Name</th>
+                    <th class="sortable" data-column="regNumber">Registration No.</th>
+                    <th class="sortable" data-column="dept">Dept</th>
+                    ${getTableHeaders(platform)}
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    profiles.forEach(profile => {
+        tableHTML += `
+            <tr>
+                <td>${profile.name}</td>
+                <td>${profile.regNumber}</td>
+                <td>${profile.dept || '-'}</td>
+                ${getTableCells(platform, profile.data)}
+            </tr>
+        `;
+    });
+
+    tableHTML += '</tbody></table>';
+    container.innerHTML = tableHTML;
+
+    // Add sorting functionality for filtered results
     addSortingEventListeners(platform, profiles);
 }
 

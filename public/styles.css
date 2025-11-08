@@ -11,9 +11,10 @@ body {
 }
 
 .container {
-    max-width: 1200px;
+    max-width: calc(100vw - 80px);
     margin: 0 auto;
     padding: 20px;
+    width: 95%;
 }
 
 header {
@@ -232,6 +233,26 @@ button[type="submit"]:hover {
 .header-buttons {
     display: flex;
     gap: 10px;
+    align-items: center;
+}
+
+.search-input {
+    padding: 10px 15px;
+    border: 2px solid #e0e0e0;
+    border-radius: 5px;
+    font-size: 0.95em;
+    min-width: 250px;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.search-input::placeholder {
+    color: #999;
 }
 
 .platform-header h2 {
