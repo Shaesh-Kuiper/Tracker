@@ -426,6 +426,22 @@ button[type="submit"]:hover {
     font-weight: 500;
 }
 
+/* CodeChef contest columns */
+.rating-up {
+    color: #1e7d22;
+    font-weight: 600;
+}
+
+.rating-down {
+    color: #dc3545;
+    font-weight: 600;
+}
+
+.penalty-flag {
+    color: #dc3545;
+    font-weight: 700;
+}
+
 
 @media (max-width: 768px) {
     .container {

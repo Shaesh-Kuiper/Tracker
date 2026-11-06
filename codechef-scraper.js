@@ -1,214 +1,263 @@
-const axios = require('axios');
+const axios = require('./http-client');
 const cheerio = require('cheerio');
+const { USER_AGENT, ScrapeError, createThrottle, requestWithRetry, errorResult } = require('./scrape-utils');
+const { parseProfileLink } = require('./profile-links');
 
-// Configurable throttling and retry settings via env vars (with sane defaults)
-// Default internal delay is 0 so bulk upload pacing fully controls the rate
-const CODECHEF_DELAY_MS = parseInt(process.env.SCRAPE_CODECHEF_DELAY_MS || process.env.SCRAPE_DELAY_MS || '0', 10);
-const MAX_RETRIES = parseInt(process.env.SCRAPE_MAX_RETRIES || '3', 10);
-const BACKOFF_BASE_MS = parseInt(process.env.SCRAPE_BACKOFF_BASE_MS || '4000', 10);
-const BACKOFF_FACTOR = parseFloat(process.env.SCRAPE_BACKOFF_FACTOR || '2');
+// CodeChef starts answering 429 at roughly one request every 4s, so keep a safe gap.
+const CODECHEF_MIN_GAP_MS = parseInt(process.env.SCRAPE_CODECHEF_MIN_GAP_MS || '5000', 10);
+const waitTurn = createThrottle(CODECHEF_MIN_GAP_MS);
 
-async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// "Recent activity" columns cover this many days
+const RECENT_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-class CodeChefScraper {
-  constructor() {
-    this.baseUrl = 'https://www.codechef.com/users/';
-  }
+const FIELDS = [
+    'division', 'provisionalRating', 'globalRank', 'countryRank', 'totalProblemsSolved', 'contestsParticipated',
+    'highestRating', 'lastContest', 'lastContestRank', 'recentContests', 'recentRatingChange', 'penalties'
+];
 
-  async getUserStats(username) {
+function cleanText(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
+function numberOrNA(s) {
+    const m = cleanText(s).replace(/,/g, '').match(/\d+/);
+    return m ? Number(m[0]) : 'N/A';
+}
+
+function toInt(value) {
+    const n = parseInt(value, 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+function signed(n) {
+    return n > 0 ? `+${n}` : String(n);
+}
+
+// The profile page embeds its data as `jQuery.extend(Drupal.settings, {...});`
+function readPageSettings(html) {
+    const m = String(html).match(/jQuery\.extend\(Drupal\.settings,\s*(\{.*\})\);/);
+    if (!m) return {};
     try {
-      const url = `${this.baseUrl}${username}`;
+        return JSON.parse(m[1]);
+    } catch (_) {
+        return {};
+    }
+}
 
-      // Fetch with retry/backoff on 429, bail fast on 404
-      let response;
-      let lastStatus = null;
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          response = await axios.get(url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36'
-            },
-            validateStatus: () => true,
-            timeout: 15000
-          });
-          lastStatus = response.status;
-          if (response.status === 200) {
-            break; // success
-          }
+// Contest-by-contest history, oldest first.
+function parseContestHistory(settings) {
+    const series = settings.date_versus_rating && settings.date_versus_rating.all;
+    if (!Array.isArray(series)) return [];
 
-          if (response.status === 404) {
-            throw new Error('404 Not Found');
-          }
+    const initialRating = settings.user_initial_ratings && toInt(settings.user_initial_ratings.all);
+    // Users from before CodeChef's Dec 2022 rating reset have an older series;
+    // for them the first contest's change can't be worked out from the start rating.
+    const hasOldSeries = Array.isArray(settings.date_versus_rating.all_old) && settings.date_versus_rating.all_old.length > 0;
 
-          if (response.status === 429) {
-            const retryAfter = parseInt(response.headers['retry-after'] || '0', 10);
-            const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.round(BACKOFF_BASE_MS * Math.pow(BACKOFF_FACTOR, attempt));
-            console.warn(`CodeChef 429 for ${username}. Backing off ${waitMs} ms (attempt ${attempt + 1}/${MAX_RETRIES + 1}).`);
-            if (attempt < MAX_RETRIES) {
-              await sleep(waitMs);
-              continue;
-            }
-            throw new Error('429 Too Many Requests');
-          }
+    const contests = series
+        .filter(c => c && c.code)
+        .map(c => ({
+            code: c.code,
+            name: c.name || c.code,
+            date: String(c.end_date || '').slice(0, 10),
+            // CodeChef times are IST
+            time: Date.parse(String(c.end_date || '').replace(' ', 'T') + '+05:30') || 0,
+            rank: toInt(c.rank),
+            rating: toInt(c.rating),
+            penalised: Boolean(c.reason || (Array.isArray(c.penalised_in) && c.penalised_in.length))
+        }))
+        .sort((a, b) => a.time - b.time);
 
-          // Other 5xx/4xx: small backoff and retry
-          if (attempt < MAX_RETRIES) {
-            await sleep(Math.round(BACKOFF_BASE_MS * Math.pow(1.5, attempt)));
-            continue;
-          }
-          throw new Error(`HTTP ${response.status}`);
-        } catch (netErr) {
-          if (attempt >= MAX_RETRIES) throw netErr;
-          await sleep(Math.round(BACKOFF_BASE_MS * Math.pow(1.5, attempt)));
-        }
-      }
+    let previous = hasOldSeries ? null : initialRating;
+    for (const c of contests) {
+        c.change = previous !== null && c.rating !== null ? c.rating - previous : null;
+        previous = c.rating;
+    }
+    return contests;
+}
 
-      const $ = cheerio.load(response.data);
-      const result = {
-        username: username,
+// Summary columns built from the contest history.
+function summariseContests(contests, now = Date.now()) {
+    const summary = {
+        lastContest: '--',
+        lastContestDate: '',
+        lastContestTs: 0,
+        lastContestRank: '--',
+        recentContests: 0,
+        recentRatingChange: 0,
+        penalties: contests.filter(c => c.penalised).length
+    };
+    if (!contests.length) return summary;
+
+    const last = contests[contests.length - 1];
+    summary.lastContest = last.name;
+    summary.lastContestDate = last.date;
+    summary.lastContestTs = last.time;
+    summary.lastContestRank = last.rank !== null ? last.rank : '--';
+
+    const recent = contests.filter(c => c.time >= now - RECENT_DAYS * DAY_MS);
+    summary.recentContests = recent.length;
+    if (recent.length) {
+        const changes = recent.map(c => c.change);
+        summary.recentRatingChange = changes.every(ch => ch !== null)
+            ? signed(changes.reduce((sum, ch) => sum + ch, 0))
+            : '--';
+    }
+    return summary;
+}
+
+// Reads the stats out of a CodeChef profile page.
+function parseProfilePage(html, username) {
+    const $ = cheerio.load(html);
+
+    if (!$('.user-details-container').length && !$('.rating-header').length) {
+        throw new ScrapeError('CodeChef page did not look like a profile (layout may have changed)', 500);
+    }
+
+    const result = {
+        username,
         division: 'N/A',
         provisionalRating: 'N/A',
         globalRank: 'N/A',
         countryRank: 'N/A',
         totalProblemsSolved: 'N/A',
-        contestsParticipated: 'N/A'
-      };
+        contestsParticipated: 'N/A',
+        highestRating: 'N/A'
+    };
 
-      // Extract Division - look for division information in rating section
-      const divisionText = $('body').text();
-      const divMatch = divisionText.match(/Div\s*(\d+)/i);
-      if (divMatch) {
-        result.division = `Div ${divMatch[1]}`;
-      }
+    // The sidebar has a "CodeChef Rating" block (#rating-block-all) and a separate
+    // "DSA Rating" block. We want the main contest rating.
+    let block = $('#rating-block-all');
+    if (!block.length) block = $('.widget-rating').first();
+    if (!block.length) block = $('body');
 
-      // Extract Provisional Rating - look for rating information
-      const ratingMatch = divisionText.match(/(\d{3,4})\?\s*.*?Provisional Rating/i) ||
-                         divisionText.match(/(\d{3,4})\s*Provisional Rating/i) ||
-                         divisionText.match(/Rating[:\s]*(\d{3,4})/i);
-      if (ratingMatch) {
-        result.provisionalRating = ratingMatch[1];
-      }
+    const header = block.find('.rating-header').first();
+    result.provisionalRating = numberOrNA(header.find('.rating-number').first().text());
 
-      // Extract Global Rank - prioritize the rating section global rank
-      const globalRankMatch = divisionText.match(/(\d+)\s*Global Rank/i) ||
-                             divisionText.match(/Global Rank[:\s]*(\d+)/i);
-      if (globalRankMatch) {
-        result.globalRank = globalRankMatch[1];
-      }
+    const divMatch = cleanText(header.text()).match(/\bDiv(?:ision)?\s*(\d)\b/i);
+    if (divMatch) result.division = `Div ${divMatch[1]}`;
 
-      // Extract Country Rank
-      const countryRankMatch = divisionText.match(/(\d+)\s*Country Rank/i);
-      if (countryRankMatch) {
-        result.countryRank = countryRankMatch[1];
-      }
+    const highestMatch = cleanText(header.text()).match(/Highest Rating\s*(\d+)/i);
+    if (highestMatch) result.highestRating = Number(highestMatch[1]);
 
-      // Extract Total Problems Solved
-      const problemsMatch = divisionText.match(/Total Problems Solved[:\s]*(\d+)/i);
-      if (problemsMatch) {
-        result.totalProblemsSolved = problemsMatch[1];
-      }
+    block.find('.rating-ranks li').each((_, li) => {
+        const text = cleanText($(li).text());
+        const value = numberOrNA($(li).find('strong').first().text());
+        if (/Global Rank/i.test(text)) result.globalRank = value;
+        else if (/Country Rank/i.test(text)) result.countryRank = value;
+    });
 
-      // Extract Number of Contests Participated
-      const contestsMatch = divisionText.match(/No\.\s*of\s*Contests\s*Participated[:\s]*(\d+)/i) ||
-                           divisionText.match(/Contests\s*Participated[:\s]*(\d+)/i) ||
-                           divisionText.match(/(\d+)\s*contests?\s*participated/i);
-      if (contestsMatch) {
-        result.contestsParticipated = contestsMatch[1];
-      }
+    const pageText = cleanText($('body').text());
 
-      // Fallback: Try alternative API approach
-      if (result.globalRank === 'N/A' || result.countryRank === 'N/A') {
-        try {
-          const apiResponse = await axios.get('https://api-base-sahil.herokuapp.com/codechef', {
-            params: { username: username },
-            timeout: 5000
-          });
+    const contests = cleanText($('.contest-participated-count').first().text()).match(/No\.?\s*of\s*Contests\s*Participated:?\s*(\d+)/i)
+        || pageText.match(/No\.?\s*of\s*Contests\s*Participated:?\s*(\d+)/i);
+    if (contests) result.contestsParticipated = Number(contests[1]);
 
-          if (apiResponse.data && typeof apiResponse.data === 'object') {
-            const apiData = apiResponse.data;
-            if (apiData.global_rank && result.globalRank === 'N/A') {
-              result.globalRank = apiData.global_rank;
-            }
-            if (apiData.country_rank && result.countryRank === 'N/A') {
-              result.countryRank = apiData.country_rank;
-            }
-            if (apiData.rating && result.provisionalRating === 'N/A') {
-              result.provisionalRating = apiData.rating;
-            }
-          }
-        } catch (apiError) {
-          console.log(`API fallback failed for ${username}, using scraped data only`);
-        }
-      }
+    const solvedHeading = $('h3').filter((_, el) => /Total Problems Solved/i.test($(el).text())).first().text();
+    const solved = cleanText(solvedHeading).match(/Total Problems Solved:?\s*(\d+)/i)
+        || pageText.match(/Total Problems Solved:?\s*(\d+)/i);
+    if (solved) result.totalProblemsSolved = Number(solved[1]);
 
-      // Respect inter-request delay to avoid rate limiting
-      await sleep(CODECHEF_DELAY_MS);
-
-      return result;
-    } catch (error) {
-      // Attempt to extract status code from error message
-      let errorCode = undefined;
-      const m = String(error && error.message || '').match(/(\d{3})/);
-      if (m) {
-        errorCode = parseInt(m[1], 10);
-      }
-      console.error(`Error fetching CodeChef data for ${username}:`, error.message);
-      return {
-        username,
-        division: 'Error',
-        provisionalRating: 'Error',
-        globalRank: 'Error',
-        countryRank: 'Error',
-        totalProblemsSolved: 'Error',
-        contestsParticipated: 'Error',
-        error: true,
-        errorCode
-      };
+    // Contest history (same page, no extra request)
+    const history = parseContestHistory(readPageSettings(html));
+    Object.assign(result, summariseContests(history));
+    if (result.highestRating === 'N/A' && history.length) {
+        const best = Math.max(...history.map(c => c.rating).filter(r => r !== null));
+        if (Number.isFinite(best)) result.highestRating = best;
     }
-  }
+    if (result.contestsParticipated === 'N/A') result.contestsParticipated = history.length;
+    result.contestHistory = history.map(({ time, ...c }) => c);
 
-  async scrapeMultipleProfiles(profileLinks) {
-    const usernames = profileLinks.map(link => {
-      // Extract username from CodeChef URL
-      const match = link.match(/codechef\.com\/users\/([^\/\?]+)/);
-      return match ? match[1] : link;
-    });
-
-    console.log('Fetching CodeChef data for users:', usernames.join(', '));
-    console.log('This may take a moment...\n');
-
-    const results = [];
-
-    // Process usernames sequentially; getUserStats includes delay
-    for (const username of usernames) {
-      const stats = await this.getUserStats(username);
-      results.push(stats);
-    }
-
-    return results;
-  }
-
-  displayResults(results) {
-    const Table = require('cli-table3');
-    const table = new Table({
-      head: ['Name', 'Division', 'Rating', 'Global Rank', 'Country Rank', 'Problems', 'Contests'],
-      colWidths: [15, 8, 8, 12, 13, 10, 10]
-    });
-
-    results.forEach(result => {
-      table.push([
-        result.username,
-        result.division,
-        result.provisionalRating,
-        result.globalRank,
-        result.countryRank,
-        result.totalProblemsSolved,
-        result.contestsParticipated
-      ]);
-    });
-
-    console.log(table.toString());
-  }
+    return result;
 }
+
+class CodeChefScraper {
+    constructor() {
+        this.baseUrl = 'https://www.codechef.com/users/';
+    }
+
+    async fetchProfilePage(username) {
+        let url = `${this.baseUrl}${encodeURIComponent(username)}`;
+
+        for (let hop = 0; hop < 3; hop++) {
+            await waitTurn();
+            const response = await requestWithRetry(() => axios.get(url, {
+                headers: { 'User-Agent': USER_AGENT },
+                timeout: 20000,
+                maxRedirects: 0,
+                validateStatus: () => true
+            }), `CodeChef ${username}`);
+
+            if (response.status === 200) return response.data;
+            if (response.status === 404) throw new ScrapeError('CodeChef profile not found', 404);
+
+            if (response.status >= 300 && response.status < 400) {
+                // CodeChef redirects unknown or deactivated users to the home page.
+                // A redirect to another /users/ page (e.g. different letter case) is fine to follow.
+                const location = new URL(response.headers.location || '/', url);
+                if (!/^\/users\/[^/]+\/?$/.test(location.pathname)) {
+                    throw new ScrapeError('CodeChef profile not found (account missing or deactivated)', 404);
+                }
+                url = location.href;
+                continue;
+            }
+
+            throw new ScrapeError(`CodeChef returned HTTP ${response.status}`, response.status);
+        }
+        throw new ScrapeError('CodeChef redirected too many times', 500);
+    }
+
+    async getUserStats(username) {
+        try {
+            const html = await this.fetchProfilePage(username);
+            return parseProfilePage(html, username);
+        } catch (error) {
+            console.error(`Error fetching CodeChef data for ${username}:`, error.message);
+            return errorResult(username, FIELDS, error);
+        }
+    }
+
+    async scrapeMultipleProfiles(profileLinks) {
+        const usernames = profileLinks.map(link => {
+            const parsed = parseProfileLink(link, 'codechef');
+            return parsed.ok ? parsed.username : link;
+        });
+
+        console.log('Fetching CodeChef data for users:', usernames.join(', '));
+        console.log('This may take a moment...\n');
+
+        const results = [];
+        // Requests are paced by the shared throttle
+        for (const username of usernames) {
+            results.push(await this.getUserStats(username));
+        }
+        return results;
+    }
+
+    displayResults(results) {
+        const Table = require('cli-table3');
+        const table = new Table({
+            head: ['Name', 'Division', 'Rating', 'Global Rank', 'Country Rank', 'Problems', 'Contests'],
+            colWidths: [15, 8, 8, 12, 13, 10, 10]
+        });
+
+        results.forEach(result => {
+            table.push([
+                result.username,
+                result.division,
+                result.provisionalRating,
+                result.globalRank,
+                result.countryRank,
+                result.totalProblemsSolved,
+                result.contestsParticipated
+            ]);
+        });
+
+        console.log(table.toString());
+    }
+}
+
+CodeChefScraper.parseProfilePage = parseProfilePage;
 
 module.exports = CodeChefScraper;

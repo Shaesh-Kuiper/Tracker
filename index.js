@@ -1,7 +1,28 @@
-const axios = require('axios');
+const axios = require('./http-client');
 const Table = require('cli-table3');
 const CodeChefScraper = require('./codechef-scraper');
 const GeeksforGeeksScraper = require('./geeksforgeeks-scraper');
+const { USER_AGENT, ScrapeError, createThrottle, requestWithRetry, errorResult } = require('./scrape-utils');
+const { parseProfileLink } = require('./profile-links');
+
+const LEETCODE_MIN_GAP_MS = parseInt(process.env.SCRAPE_LEETCODE_MIN_GAP_MS || '1000', 10);
+const waitTurn = createThrottle(LEETCODE_MIN_GAP_MS);
+
+const FIELDS = ['easy', 'medium', 'hard', 'total'];
+
+const PROFILE_QUERY = `
+  query getUserProfile($username: String!) {
+    matchedUser(username: $username) {
+      username
+      submitStatsGlobal {
+        acSubmissionNum {
+          difficulty
+          count
+        }
+      }
+    }
+  }
+`;
 
 class LeetCodeScraper {
   constructor() {
@@ -9,42 +30,31 @@ class LeetCodeScraper {
   }
 
   async getUserStats(username) {
-    const query = `
-      query getUserProfile($username: String!) {
-        matchedUser(username: $username) {
-          username
-          submitStatsGlobal {
-            acSubmissionNum {
-              difficulty
-              count
-            }
-          }
-        }
-      }
-    `;
-
     try {
-      const response = await axios.post(this.graphqlUrl, {
-        query,
+      await waitTurn();
+      const response = await requestWithRetry(() => axios.post(this.graphqlUrl, {
+        query: PROFILE_QUERY,
         variables: { username }
       }, {
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
+          'User-Agent': USER_AGENT,
+          'Referer': 'https://leetcode.com/'
+        },
+        timeout: 20000,
+        validateStatus: () => true
+      }), `LeetCode ${username}`);
 
-      const data = response.data;
-      if (data.errors) {
-        throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
-      }
-
-      const user = data.data?.matchedUser;
+      const data = response.data || {};
+      const user = data.data && data.data.matchedUser;
       if (!user) {
-        throw new Error(`User ${username} not found`);
+        const message = (data.errors && data.errors[0] && data.errors[0].message) || '';
+        if (/does not exist|not found/i.test(message) || (response.status === 200 && data.data)) {
+          throw new ScrapeError('LeetCode profile not found', 404);
+        }
+        throw new ScrapeError(`LeetCode returned HTTP ${response.status}${message ? `: ${message}` : ''}`, response.status);
       }
 
-      const stats = user.submitStatsGlobal.acSubmissionNum;
       const result = {
         username: user.username,
         easy: 0,
@@ -53,55 +63,36 @@ class LeetCodeScraper {
         total: 0
       };
 
-      stats.forEach(stat => {
+      for (const stat of user.submitStatsGlobal.acSubmissionNum) {
         const difficulty = stat.difficulty.toLowerCase();
-        const count = stat.count;
-
-        if (difficulty === 'easy') {
-          result.easy = count;
-        } else if (difficulty === 'medium') {
-          result.medium = count;
-        } else if (difficulty === 'hard') {
-          result.hard = count;
+        if (difficulty === 'easy' || difficulty === 'medium' || difficulty === 'hard') {
+          result[difficulty] = stat.count;
         }
-      });
+      }
 
       // Calculate total from Easy + Medium + Hard only
       result.total = result.easy + result.medium + result.hard;
 
       return result;
     } catch (error) {
-      console.error(`Error fetching data for ${username}:`, error.message);
-      return {
-        username,
-        easy: 'Error',
-        medium: 'Error',
-        hard: 'Error',
-        total: 'Error',
-        error: true
-      };
+      console.error(`Error fetching LeetCode data for ${username}:`, error.message);
+      return errorResult(username, FIELDS, error);
     }
   }
 
   async scrapeMultipleProfiles(profileLinks) {
     const usernames = profileLinks.map(link => {
-      // Extract username from various LeetCode URL formats
-      const match = link.match(/leetcode\.com\/(?:u\/|profile\/)?([^\/\?]+)/);
-      return match ? match[1] : link;
+      const parsed = parseProfileLink(link, 'leetcode');
+      return parsed.ok ? parsed.username : link;
     });
 
     console.log('Fetching data for users:', usernames.join(', '));
     console.log('This may take a moment...\n');
 
     const results = [];
-
-    // Process usernames sequentially to avoid rate limiting
+    // Requests are paced by the shared throttle
     for (const username of usernames) {
-      const stats = await this.getUserStats(username);
-      results.push(stats);
-
-      // Add small delay between requests
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      results.push(await this.getUserStats(username));
     }
 
     return results;
@@ -133,15 +124,17 @@ function categorizeLinks(profileLinks) {
   const geeksforgeeksLinks = [];
 
   profileLinks.forEach(link => {
-    if (link.includes('leetcode.com')) {
-      leetcodeLinks.push(link);
-    } else if (link.includes('codechef.com')) {
+    const parsed = parseProfileLink(link);
+    const platform = parsed.ok ? parsed.platform : null;
+    if (platform === 'codechef') {
       codechefLinks.push(link);
-    } else if (link.includes('geeksforgeeks.org')) {
+    } else if (platform === 'geeksforgeeks') {
       geeksforgeeksLinks.push(link);
     } else {
-      // Assume it's a username - try to determine platform by context or let user specify
-      console.log(`Warning: Unable to determine platform for "${link}". Treating as LeetCode username.`);
+      if (platform !== 'leetcode') {
+        // Assume it's a LeetCode username
+        console.log(`Warning: Unable to determine platform for "${link}". Treating as LeetCode username.`);
+      }
       leetcodeLinks.push(link);
     }
   });

@@ -9,6 +9,7 @@ const multer = require('multer');
 const LeetCodeScraper = require('./index.js');
 const CodeChefScraper = require('./codechef-scraper');
 const GeeksforGeeksScraper = require('./geeksforgeeks-scraper');
+const { PLATFORM_LABELS, resolveProfileLink } = require('./profile-links');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -127,29 +128,22 @@ async function saveProfiles(profiles) {
     }
 }
 
-// Determine platform from URL
-function determinePlatform(url) {
-    if (url.includes('leetcode.com')) return 'leetcode';
-    if (url.includes('codechef.com')) return 'codechef';
-    if (url.includes('geeksforgeeks.org')) return 'geeksforgeeks';
-    return null;
+// Data stored for a profile whose link could not be understood
+function invalidLinkData(reason) {
+    return { error: true, errorCode: 400, errorMessage: reason };
 }
 
-// Extract username from URL
-function extractUsername(url, platform) {
-    switch (platform) {
-        case 'leetcode':
-            const leetcodeMatch = url.match(/leetcode\.com\/(?:u\/|profile\/)?([^\/\?]+)/);
-            return leetcodeMatch ? leetcodeMatch[1] : url;
-        case 'codechef':
-            const codechefMatch = url.match(/codechef\.com\/users\/([^\/\?]+)/);
-            return codechefMatch ? codechefMatch[1] : url;
-        case 'geeksforgeeks':
-            const gfgMatch = url.match(/geeksforgeeks\.org\/user\/([^\/\?]+)/);
-            return gfgMatch ? gfgMatch[1] : url;
-        default:
-            return url;
-    }
+// Short log/UI message for a failed profile
+function describeFailure(data) {
+    if (data && data.errorCode === 404) return 'Profile does not exist';
+    if (data && data.errorCode === 400) return 'Invalid link';
+    if (data && data.errorCode === 429) return 'Rate limited';
+    return 'Failed';
+}
+
+// Use '' only for missing values, so real zeros still show up in exports
+function cell(value) {
+    return value === undefined || value === null ? '' : value;
 }
 
 // Normalize headers to canonical keys
@@ -204,7 +198,7 @@ async function scrapeProfileData(username, platform) {
         }
     } catch (error) {
         console.error(`Error scraping ${platform} data for ${username}:`, error);
-        return { error: true };
+        return { error: true, errorMessage: error.message || 'Unexpected error' };
     }
 }
 
@@ -241,10 +235,11 @@ app.post('/api/profiles', async (req, res) => {
             return res.status(400).json({ error: 'Registration number must be exactly 12 digits' });
         }
 
-        const platform = determinePlatform(profileLink);
-        if (!platform) {
-            return res.status(400).json({ error: 'Unsupported platform' });
+        const parsedLink = await resolveProfileLink(profileLink);
+        if (!parsedLink.ok) {
+            return res.status(400).json({ error: parsedLink.reason });
         }
+        const { platform, username } = parsedLink;
 
         // Load existing profiles
         const profiles = await loadProfiles();
@@ -255,7 +250,6 @@ app.post('/api/profiles', async (req, res) => {
         }
 
         // Optional: prevent duplicate username in same platform
-        const username = extractUsername(profileLink, platform);
         if (profiles[platform].some(p => p.username === username)) {
             return res.status(400).json({ error: `Username already exists in ${platform}` });
         }
@@ -266,8 +260,11 @@ app.post('/api/profiles', async (req, res) => {
             return res.status(400).json({ error: `Maximum limit of ${MAX_PER_PLATFORM} ${platform} profiles reached` });
         }
 
-        // Extract username and scrape data
+        // Scrape data
         const data = await scrapeProfileData(username, platform);
+        if (data.error && data.errorCode === 404) {
+            return res.status(400).json({ error: `${PLATFORM_LABELS[platform]} profile "${username}" does not exist` });
+        }
 
         // Create profile object
         const newProfile = {
@@ -311,9 +308,22 @@ app.post('/api/profiles/:platform(leetcode|codechef|geeksforgeeks)/refresh', asy
         for (const profile of profiles[platform]) {
             console.log(`Refreshing ${platform} data for ${profile.name}...`);
 
-            const newData = await scrapeProfileData(profile.username, platform);
+            // Re-read the link so profiles saved by older versions (with a bad username) get fixed
+            const parsedLink = await resolveProfileLink(profile.profileLink, platform);
+            if (!parsedLink.ok) {
+                updatedProfiles.push({
+                    ...profile,
+                    username: '',
+                    data: invalidLinkData(parsedLink.reason),
+                    lastUpdated: new Date().toISOString()
+                });
+                continue;
+            }
+
+            const newData = await scrapeProfileData(parsedLink.username, platform);
             const updatedProfile = {
                 ...profile,
+                username: parsedLink.username,
                 data: newData,
                 lastUpdated: new Date().toISOString()
             };
@@ -423,150 +433,136 @@ app.get('/api/stats', async (req, res) => {
     }
 });
 
-// Export platform data to Excel
+// Excel helpers
+function autosizeColumns(worksheet, rows) {
+    const keys = Object.keys(rows[0] || {});
+    worksheet['!cols'] = keys.map(key => ({
+        wch: Math.min(Math.max(key.length, ...rows.map(row => String(cell(row[key])).length)) + 2, 50)
+    }));
+}
+
+function appendSheet(workbook, rows, sheetName) {
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    autosizeColumns(worksheet, rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+}
+
+function lastContestText(data) {
+    if (!data.lastContest || data.lastContest === '--') return '';
+    return data.lastContestDate ? `${data.lastContest} (${data.lastContestDate})` : data.lastContest;
+}
+
+// One row per student per CodeChef contest, newest first
+function codechefContestRows(codechefProfiles) {
+    const rows = [];
+    for (const profile of codechefProfiles || []) {
+        const history = profile.data && Array.isArray(profile.data.contestHistory) ? profile.data.contestHistory : [];
+        for (const contest of [...history].reverse()) {
+            rows.push({
+                'Name': profile.name,
+                'Registration Number': profile.regNumber,
+                'Dept': profile.dept || '',
+                'CodeChef Username': profile.username,
+                'Contest': contest.name,
+                'Contest Code': contest.code,
+                'Date': contest.date,
+                'Rank': cell(contest.rank),
+                'Rating After': cell(contest.rating),
+                'Rating Change': cell(contest.change),
+                'Penalised for Cheating': contest.penalised ? 'Yes' : ''
+            });
+        }
+    }
+    return rows;
+}
+
+function sendWorkbook(res, workbook, fileName) {
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Length', buffer.length);
+    res.end(buffer);
+}
+
+const ALL_EXPORT_COLUMNS = [
+    'LC_Easy', 'LC_Medium', 'LC_Hard', 'LC_Total',
+    'CC_Division', 'CC_Rating', 'CC_Highest Rating', 'CC_Global Rank', 'CC_Contests', 'CC_Problems',
+    'CC_Last Contest', 'CC_Last Contest Rank', 'CC_Contests (30d)', 'CC_Rating Change (30d)', 'CC_Penalties',
+    'GG_Easy', 'GG_Medium', 'GG_Hard', 'GG_Score', 'GG_Rank'
+];
+
+// Export all students (one row per student) plus their CodeChef contest history
 app.get('/api/export/all', async (req, res) => {
     try {
         const profiles = await loadProfiles();
 
-        // Create a map to combine all student data by registration number
+        // Combine all student data by registration number
         const studentMap = new Map();
+        const studentRow = profile => {
+            if (!studentMap.has(profile.regNumber)) {
+                const row = { 'Name': profile.name, 'Registration Number': profile.regNumber, 'Dept': profile.dept || '' };
+                for (const column of ALL_EXPORT_COLUMNS) row[column] = '';
+                studentMap.set(profile.regNumber, row);
+            }
+            return studentMap.get(profile.regNumber);
+        };
+        const hasData = profile => profile.data && !profile.data.error;
 
-        // Process LeetCode data
-        if (profiles.leetcode) {
-            profiles.leetcode.forEach(profile => {
-                if (!studentMap.has(profile.regNumber)) {
-                    studentMap.set(profile.regNumber, {
-                        'Name': profile.name,
-                        'Registration Number': profile.regNumber,
-                        'Dept': profile.dept || '',
-                        'LC_Easy': '',
-                        'LC_Medium': '',
-                        'LC_Hard': '',
-                        'LC_Total': '',
-                        'CC_Division': '',
-                        'CC_Global Rank': '',
-                        'CC_Contests': '',
-                        'CC_Problems': '',
-                        'GG_Easy': '',
-                        'GG_Medium': '',
-                        'GG_Hard': '',
-                        'GG_Score': '',
-                        'GG_Rank': ''
-                    });
-                }
-                const student = studentMap.get(profile.regNumber);
-                if (profile.data && !profile.data.error) {
-                    student['LC_Easy'] = profile.data.easy || '';
-                    student['LC_Medium'] = profile.data.medium || '';
-                    student['LC_Hard'] = profile.data.hard || '';
-                    student['LC_Total'] = profile.data.total || '';
-                }
+        for (const profile of profiles.leetcode || []) {
+            const student = studentRow(profile);
+            if (!hasData(profile)) continue;
+            const d = profile.data;
+            Object.assign(student, {
+                'LC_Easy': cell(d.easy),
+                'LC_Medium': cell(d.medium),
+                'LC_Hard': cell(d.hard),
+                'LC_Total': cell(d.total)
             });
         }
 
-        // Process CodeChef data
-        if (profiles.codechef) {
-            profiles.codechef.forEach(profile => {
-                if (!studentMap.has(profile.regNumber)) {
-                    studentMap.set(profile.regNumber, {
-                        'Name': profile.name,
-                        'Registration Number': profile.regNumber,
-                        'Dept': profile.dept || '',
-                        'LC_Easy': '',
-                        'LC_Medium': '',
-                        'LC_Hard': '',
-                        'LC_Total': '',
-                        'CC_Division': '',
-                        'CC_Global Rank': '',
-                        'CC_Contests': '',
-                        'CC_Problems': '',
-                        'GG_Easy': '',
-                        'GG_Medium': '',
-                        'GG_Hard': '',
-                        'GG_Score': '',
-                        'GG_Rank': ''
-                    });
-                }
-                const student = studentMap.get(profile.regNumber);
-                if (profile.data && !profile.data.error) {
-                    student['CC_Division'] = profile.data.division || '';
-                    student['CC_Global Rank'] = profile.data.globalRank || '';
-                    student['CC_Contests'] = profile.data.contestsParticipated || '';
-                    student['CC_Problems'] = profile.data.totalProblemsSolved || '';
-                }
+        for (const profile of profiles.codechef || []) {
+            const student = studentRow(profile);
+            if (!hasData(profile)) continue;
+            const d = profile.data;
+            Object.assign(student, {
+                'CC_Division': cell(d.division),
+                'CC_Rating': cell(d.provisionalRating),
+                'CC_Highest Rating': cell(d.highestRating),
+                'CC_Global Rank': cell(d.globalRank),
+                'CC_Contests': cell(d.contestsParticipated),
+                'CC_Problems': cell(d.totalProblemsSolved),
+                'CC_Last Contest': lastContestText(d),
+                'CC_Last Contest Rank': cell(d.lastContestRank),
+                'CC_Contests (30d)': cell(d.recentContests),
+                'CC_Rating Change (30d)': cell(d.recentRatingChange),
+                'CC_Penalties': cell(d.penalties)
             });
         }
 
-        // Process GeeksforGeeks data
-        if (profiles.geeksforgeeks) {
-            profiles.geeksforgeeks.forEach(profile => {
-                if (!studentMap.has(profile.regNumber)) {
-                    studentMap.set(profile.regNumber, {
-                        'Name': profile.name,
-                        'Registration Number': profile.regNumber,
-                        'Dept': profile.dept || '',
-                        'LC_Easy': '',
-                        'LC_Medium': '',
-                        'LC_Hard': '',
-                        'LC_Total': '',
-                        'CC_Division': '',
-                        'CC_Global Rank': '',
-                        'CC_Contests': '',
-                        'CC_Problems': '',
-                        'GG_Easy': '',
-                        'GG_Medium': '',
-                        'GG_Hard': '',
-                        'GG_Score': '',
-                        'GG_Rank': ''
-                    });
-                }
-                const student = studentMap.get(profile.regNumber);
-                if (profile.data && !profile.data.error) {
-                    student['GG_Easy'] = profile.data.easy || '';
-                    student['GG_Medium'] = profile.data.medium || '';
-                    student['GG_Hard'] = profile.data.hard || '';
-                    student['GG_Score'] = profile.data.codingScore || '';
-                    student['GG_Rank'] = profile.data.contestRating || '';
-                }
+        for (const profile of profiles.geeksforgeeks || []) {
+            const student = studentRow(profile);
+            if (!hasData(profile)) continue;
+            const d = profile.data;
+            Object.assign(student, {
+                'GG_Easy': cell(d.easy),
+                'GG_Medium': cell(d.medium),
+                'GG_Hard': cell(d.hard),
+                'GG_Score': cell(d.codingScore),
+                'GG_Rank': cell(d.contestRating)
             });
         }
 
-        // Convert map to array
         const excelData = Array.from(studentMap.values());
-
         if (excelData.length === 0) {
             return res.status(400).json({ error: 'No data to export' });
         }
 
-        // Create workbook and worksheet
         const workbook = XLSX.utils.book_new();
-        const worksheet = XLSX.utils.json_to_sheet(excelData);
+        appendSheet(workbook, excelData, 'Student Data');
+        const contestRows = codechefContestRows(profiles.codechef);
+        if (contestRows.length) appendSheet(workbook, contestRows, 'CodeChef Contests');
 
-        // Auto-size columns
-        const colWidths = [];
-        const keys = Object.keys(excelData[0] || {});
-        keys.forEach((key, index) => {
-            const maxLength = Math.max(
-                key.length,
-                ...excelData.map(row => String(row[key] || '').length)
-            );
-            colWidths[index] = { wch: Math.min(maxLength + 2, 50) };
-        });
-        worksheet['!cols'] = colWidths;
-
-        // Add worksheet to workbook
-        XLSX.utils.book_append_sheet(workbook, worksheet, 'Student Data');
-
-        // Generate Excel file
-        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-
-        // Set headers for file download
-        const fileName = `student_data_${new Date().toISOString().split('T')[0]}.xlsx`;
-        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Length', buffer.length);
-
-        res.end(buffer);
+        sendWorkbook(res, workbook, `student_data_${new Date().toISOString().split('T')[0]}.xlsx`);
     } catch (error) {
         console.error('Error exporting all student data to Excel:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -611,10 +607,16 @@ app.get('/api/export/:platform(leetcode|codechef|geeksforgeeks)', async (req, re
                         Object.assign(baseData, {
                             'Division': profile.data.division,
                             'Rating': profile.data.provisionalRating,
+                            'Highest Rating': cell(profile.data.highestRating),
                             'Global Rank': profile.data.globalRank,
                             'Country Rank': profile.data.countryRank,
                             'Problems Solved': profile.data.totalProblemsSolved,
-                            'Contests Participated': profile.data.contestsParticipated
+                            'Contests Participated': profile.data.contestsParticipated,
+                            'Last Contest': lastContestText(profile.data),
+                            'Last Contest Rank': cell(profile.data.lastContestRank),
+                            'Contests (last 30 days)': cell(profile.data.recentContests),
+                            'Rating Change (last 30 days)': cell(profile.data.recentRatingChange),
+                            'Cheating Penalties': cell(profile.data.penalties)
                         });
                         break;
                     case 'geeksforgeeks':
@@ -631,41 +633,22 @@ app.get('/api/export/:platform(leetcode|codechef|geeksforgeeks)', async (req, re
                         });
                         break;
                 }
+            } else {
+                // Say why there is no data (bad link, deleted account, ...)
+                baseData['Error'] = (profile.data && profile.data.errorMessage) || 'Could not load data';
             }
 
             return baseData;
         });
 
-        // Create workbook and worksheet
         const workbook = XLSX.utils.book_new();
-        const worksheet = XLSX.utils.json_to_sheet(excelData);
+        appendSheet(workbook, excelData, `${platform.charAt(0).toUpperCase() + platform.slice(1)} Profiles`);
+        if (platform === 'codechef') {
+            const contestRows = codechefContestRows(profiles.codechef);
+            if (contestRows.length) appendSheet(workbook, contestRows, 'CodeChef Contests');
+        }
 
-        // Auto-size columns
-        const colWidths = [];
-        const keys = Object.keys(excelData[0] || {});
-        keys.forEach((key, index) => {
-            const maxLength = Math.max(
-                key.length,
-                ...excelData.map(row => String(row[key] || '').length)
-            );
-            colWidths[index] = { wch: Math.min(maxLength + 2, 50) };
-        });
-        worksheet['!cols'] = colWidths;
-
-        // Add worksheet to workbook
-        const sheetName = `${platform.charAt(0).toUpperCase() + platform.slice(1)} Profiles`;
-        XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
-
-        // Generate Excel file
-        const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-
-        // Set headers for file download
-        const fileName = `${platform}_profiles_${new Date().toISOString().split('T')[0]}.xlsx`;
-        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Length', buffer.length);
-
-        res.end(buffer);
+        sendWorkbook(res, workbook, `${platform}_profiles_${new Date().toISOString().split('T')[0]}.xlsx`);
     } catch (error) {
         console.error('Error exporting to Excel:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -715,7 +698,7 @@ app.post('/api/bulk-upload', upload.single('file'), async (req, res) => {
                 { platform: 'leetcode', link: leet },
                 { platform: 'codechef', link: cc },
                 { platform: 'geeksforgeeks', link: gfg }
-            ].filter(x => x.link && determinePlatform(x.link));
+            ].filter(x => x.link);
             expectedTotal += links.length;
             if (expectedTotal > MAX_TOTAL) { expectedTotal = MAX_TOTAL; break; }
         }
@@ -754,14 +737,14 @@ app.post('/api/bulk-upload', upload.single('file'), async (req, res) => {
             }
 
             for (const { platform, link } of links) {
-                if (!determinePlatform(link)) {
-                    continue;
-                }
-
-                const username = extractUsername(link, platform);
-                let data = await scrapeProfileData(username, platform);
-                if (!data || data.error) {
-                    data = { error: true };
+                // Broken links still get a row (with the reason) so they are easy to spot and fix
+                const parsedLink = await resolveProfileLink(link, platform);
+                const username = parsedLink.ok ? parsedLink.username : '';
+                let data = parsedLink.ok
+                    ? await scrapeProfileData(username, platform)
+                    : invalidLinkData(parsedLink.reason);
+                if (!data) {
+                    data = { error: true, errorMessage: 'No data returned' };
                 }
 
                 const newProfile = {
@@ -780,17 +763,13 @@ app.post('/api/bulk-upload', upload.single('file'), async (req, res) => {
                 // Emit per-profile log line
                 let status = 'success';
                 let message = `Uploaded successfully : ${platform} -> ${username}`;
-                if (newProfile.data && newProfile.data.error) {
+                if (data.error) {
                     status = 'error';
-                    if (platform === 'codechef' && newProfile.data.errorCode === 404) {
-                        message = `DO not exist : ${platform} -> ${username}`;
-                    } else {
-                        message = `Failed : ${platform} -> ${username}`;
-                    }
+                    message = `${describeFailure(data)} : ${platform} -> ${username || name} (${data.errorMessage || 'unknown error'})`;
                 }
                 sseBroadcast({ type: 'log', status, platform, username, message, ts: Date.now() });
-                // Add one profile every BULK_UPLOAD_DELAY_MS (default 2000ms)
-                await delay(BULK_UPLOAD_DELAY_MS);
+                // Add one profile every BULK_UPLOAD_DELAY_MS (default 2000ms); no need to wait after a bad link
+                if (parsedLink.ok) await delay(BULK_UPLOAD_DELAY_MS);
             }
         }
 

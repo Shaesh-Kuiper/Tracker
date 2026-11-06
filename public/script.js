@@ -462,7 +462,8 @@ function getTableHeaders(platform) {
         case 'leetcode':
             return '<th class="sortable" data-column="easy">Easy</th><th class="sortable" data-column="medium">Medium</th><th class="sortable" data-column="hard">Hard</th><th class="sortable" data-column="total">Total</th>';
         case 'codechef':
-            return '<th class="sortable" data-column="division">Division</th><th class="sortable" data-column="provisionalRating">Rating</th><th class="sortable" data-column="globalRank">Global Rank</th><th class="sortable" data-column="countryRank">Country Rank</th><th class="sortable" data-column="totalProblemsSolved">Problems</th><th class="sortable" data-column="contestsParticipated">Contests</th>';
+            return '<th class="sortable" data-column="division">Division</th><th class="sortable" data-column="provisionalRating">Rating</th><th class="sortable" data-column="highestRating">Highest</th><th class="sortable" data-column="globalRank">Global Rank</th><th class="sortable" data-column="countryRank">Country Rank</th><th class="sortable" data-column="totalProblemsSolved">Problems</th><th class="sortable" data-column="contestsParticipated">Contests</th>'
+                + '<th class="sortable" data-column="lastContestTs">Last Contest</th><th class="sortable" data-column="lastContestRank">Last Rank</th><th class="sortable" data-column="recentContests" title="Contests in the last 30 days">Contests (30d)</th><th class="sortable" data-column="recentRatingChange" title="Rating change over the last 30 days">Rating Δ (30d)</th><th class="sortable" data-column="penalties" title="Contests where CodeChef penalised the user for cheating">Penalties</th>';
         case 'geeksforgeeks':
             return '<th class="sortable" data-column="school">School</th><th class="sortable" data-column="basic">Basic</th><th class="sortable" data-column="easy">Easy</th><th class="sortable" data-column="medium">Medium</th><th class="sortable" data-column="hard">Hard</th><th class="sortable" data-column="totalProblemsSolved">Total</th><th class="sortable" data-column="streak">Streak</th><th class="sortable" data-column="codingScore">Score</th><th class="sortable" data-column="contestRating">Rank</th>';
         default:
@@ -470,10 +471,15 @@ function getTableHeaders(platform) {
     }
 }
 
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
 function getTableCells(platform, data) {
     if (data.error) {
-        const colspan = platform === 'leetcode' ? 4 : platform === 'codechef' ? 6 : 9;
-        return `<td colspan="${colspan}" class="error-cell">Error loading data</td>`;
+        const colspan = platform === 'leetcode' ? 4 : platform === 'codechef' ? 12 : 9;
+        const reason = data.errorMessage ? `Error: ${escapeHtml(data.errorMessage)}` : 'Error loading data';
+        return `<td colspan="${colspan}" class="error-cell">${reason}</td>`;
     }
 
     switch (platform) {
@@ -484,15 +490,30 @@ function getTableCells(platform, data) {
                 <td>${data.hard}</td>
                 <td><strong>${data.total}</strong></td>
             `;
-        case 'codechef':
+        case 'codechef': {
+            // Profiles saved before the contest columns existed won't have these fields until refreshed
+            const show = value => (value === undefined || value === null ? '--' : escapeHtml(value));
+            const lastContest = data.lastContest && data.lastContest !== '--'
+                ? `${escapeHtml(data.lastContest)}<br><small>${escapeHtml(data.lastContestDate || '')}</small>`
+                : '--';
+            const change = data.recentRatingChange;
+            const changeClass = typeof change === 'string' && change.startsWith('+') ? 'rating-up'
+                : typeof change === 'string' && change.startsWith('-') ? 'rating-down' : '';
             return `
-                <td>${data.division}</td>
-                <td>${data.provisionalRating}</td>
-                <td>${data.globalRank}</td>
-                <td>${data.countryRank}</td>
-                <td>${data.totalProblemsSolved}</td>
-                <td>${data.contestsParticipated}</td>
+                <td>${show(data.division)}</td>
+                <td>${show(data.provisionalRating)}</td>
+                <td>${show(data.highestRating)}</td>
+                <td>${show(data.globalRank)}</td>
+                <td>${show(data.countryRank)}</td>
+                <td>${show(data.totalProblemsSolved)}</td>
+                <td>${show(data.contestsParticipated)}</td>
+                <td>${lastContest}</td>
+                <td>${show(data.lastContestRank)}</td>
+                <td>${show(data.recentContests)}</td>
+                <td class="${changeClass}">${show(change)}</td>
+                <td class="${data.penalties > 0 ? 'penalty-flag' : ''}">${show(data.penalties)}</td>
             `;
+        }
         case 'geeksforgeeks':
             return `
                 <td>${data.school}</td>

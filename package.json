@@ -8,17 +8,21 @@
     "dev": "node server.js",
     "cli": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build:exe": "pkg server.js --targets node18-win-x64 --output dist/CPTracker.exe"
+    "build:exe": "pkg server.js --config package.json --targets node18-win-x64 --output dist/CPTracker.exe"
   },
   "pkg": {
     "scripts": [
       "server.js",
       "index.js",
       "codechef-scraper.js",
-      "geeksforgeeks-scraper.js"
+      "geeksforgeeks-scraper.js",
+      "scrape-utils.js",
+      "profile-links.js",
+      "http-client.js"
     ],
     "assets": [
-      "public/**/*"
+      "public/**/*",
+      "node_modules/axios/dist/node/axios.cjs"
     ]
   },
   "dependencies": {
